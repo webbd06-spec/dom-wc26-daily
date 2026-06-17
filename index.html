@@ -609,6 +609,50 @@ async function loadAll() {
     appData.locations = allItin.filter(r => r['Lat']&&r['Lng']&&parseFloat(r['Lat'])&&r['Type']!=='Match-Other').map(r => ({
       Date:r['Date'], Name:r['Location Name']||r['Activity'], Type:r['Type']||'Activity', Lat:r['Lat'], Lng:r['Lng'], City:r['City'], Route:r['Route']||'Both', Notes:r['Notes']||'',
     }));
+    // Inject confirmed hotel pins for every night of each stay so the map
+    // always shows tonight's hotel even if it isn't a row in the Itinerary sheet
+    const hotelCoords = {
+      'Boston':      {lat:42.3559, lng:-71.0624},
+      'New York':    {lat:40.7532, lng:-73.9345},
+      'NYC':         {lat:40.7532, lng:-73.9345},
+      'Atlanta':     {lat:33.7765, lng:-84.3875},
+      'Mexico City': {lat:19.4326, lng:-99.1332},
+      'Miami':       {lat:25.7617, lng:-80.1918},
+      'Toronto':     {lat:43.6510, lng:-79.3470},
+      'Dallas':      {lat:32.8279, lng:-96.8005},
+    };
+    appData.hotels.filter(h => (h['Status']||'').toLowerCase()==='confirmed').forEach(h => {
+      const ci = toISODate(h['Check In']), co = toISODate(h['Check Out']);
+      if (!ci || !co) return;
+      const route = h._route === 1 ? '1' : h._route === 2 ? '2' : 'Both';
+      const city = h['City'] || '';
+      // Use coords from sheet if available (future-proofing), else fallback to city defaults
+      const fallback = hotelCoords[city] || null;
+      let lat = parseFloat(h['Lat']) || (fallback ? fallback.lat : null);
+      let lng = parseFloat(h['Lng']) || (fallback ? fallback.lng : null);
+      if (!lat || !lng) return;
+      // Walk each night of the stay
+      let cur = new Date(ci + 'T00:00:00');
+      const end = new Date(co + 'T00:00:00');
+      while (cur < end) {
+        const dateStr = cur.toISOString().split('T')[0];
+        // Only add if no Hotel pin already exists for this date
+        const already = appData.locations.some(l => l.Date===dateStr && l.Type==='Hotel');
+        if (!already) {
+          appData.locations.push({
+            Date: dateStr,
+            Name: h['Hotel Name'] || 'Hotel',
+            Type: 'Hotel',
+            Lat:  String(lat),
+            Lng:  String(lng),
+            City: city,
+            Route: route,
+            Notes: `${h['Nights']||'?'} nights · ${h['Booked With']||''}${h['Booking #']?' #'+h['Booking #']:''}`.trim(),
+          });
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+    });
     appData.restaurants = toObjs(restRaw);
     // Prefetch weather for all cities so the strip is fully populated from the start
     const allCityKeys = [...new Set([...appData.itin1, ...appData.itin2].map(r => getCity((r['City']||'').split('→')[0].trim())))];
