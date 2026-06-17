@@ -110,10 +110,6 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 .match-badge{font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;flex-shrink:0}
 .badge-you{background:var(--red);color:#fff}
 .badge-city{background:var(--navy-dim);color:var(--navy)}
-.alert{margin:10px 16px 0;background:var(--gold-dim);border:1px solid rgba(217,119,6,.25);border-radius:12px;padding:10px 12px;display:flex;align-items:flex-start;gap:10px}
-.alert-icon{font-size:15px;flex-shrink:0;line-height:1.5}
-.alert-title{font-size:12px;font-weight:700;color:#92400e}
-.alert-text{font-size:11px;color:#78350f;margin-top:1px;line-height:1.4}
 .tl{padding:0 16px}
 .tl-row{display:grid;grid-template-columns:52px 1fr;gap:0 10px;position:relative}
 .tl-row:not(:last-child)::after{content:'';position:absolute;left:60px;top:22px;bottom:-2px;width:1px;background:var(--border)}
@@ -157,16 +153,6 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 .q-val{font-family:var(--display);font-size:32px;color:var(--navy);letter-spacing:.5px;line-height:1}
 .q-sub{font-size:11px;color:var(--text-2);margin-top:3px}
 .qcard.warn .q-val{color:var(--gold)}
-.b-total{font-family:var(--display);font-size:44px;color:var(--navy);letter-spacing:1px;line-height:1}
-.b-sub{font-size:12px;color:var(--text-2);margin-top:3px}
-.b-cats{margin-top:14px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px}
-.b-row{display:flex;justify-content:space-between;align-items:center}
-.b-name{font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:7px}
-.b-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.b-val{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text)}
-.b-total-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
-.b-total-label{font-size:13px;font-weight:700;color:var(--text)}
-.b-total-val{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--navy)}
 .itin-day{margin:0 16px 10px;background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
 .itin-past{opacity:.55}
 .itin-hdr{background:var(--navy);padding:10px 14px;display:flex;justify-content:space-between;align-items:center}
@@ -268,7 +254,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 const SHEET_ID  = '1j_YJwB1ox3A43Bv8TBhohr4Mh3nLWFguJlPEUgEve-w';
 const SHEET_KEY = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
 const MAPS_KEY  = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
-const CACHE_VER = 'dom-wc26-v17';
+const CACHE_VER = 'dom-wc26-v18';
 
 /* ═══ PWA SETUP ═══ */
 (function(){
@@ -370,7 +356,7 @@ let weatherCache = {};
 let loaded = false;
 
 /* ═══ HELPERS ═══ */
-const today = () => new Date().toISOString().split('T')[0];
+const today = () => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; };
 
 function parseDate(s) {
   if (!s) return null;
@@ -381,7 +367,7 @@ function parseDate(s) {
   const d = new Date(s.replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s*/i,''));
   return isNaN(d) ? null : d;
 }
-function toISODate(s) { const d=parseDate(s); if(!d) return ''; return d.toISOString().split('T')[0]; }
+function toISODate(s) { const d=parseDate(s); if(!d) return ''; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function fmtDate(s) { if(!s) return ''; const d=parseDate(s); if(!d) return s; return `${d.getDate()} ${MONTHS[d.getMonth()]}`; }
 function daysUntil(s) {
   if (!s) return null;
@@ -402,7 +388,6 @@ function extractIATA(str) {
   for (const w of [...words].reverse()) { if (/^[A-Z]{3}$/.test(w)) return w; }
   return str.substring(0,3).toUpperCase();
 }
-function parseGBP(s) { if (!s) return 0; const n=parseFloat(String(s).replace(/[£$,\s]/g,'')); return isNaN(n)?0:n; }
 function isEngland(match) { return /england/i.test(match||''); }
 function matchInCity(venue, city) {
   const v=(venue||'').toLowerCase(), c=(city||'').toLowerCase();
@@ -531,7 +516,7 @@ function renderMapForDate(dateStr) {
   if (!day) return;
   const cityKey = getCity((day.city||'').split('→')[0].trim());
   const cityInfo = CITIES[cityKey] || CITIES['LONDON'];
-  const dDate = new Date(dateStr);
+  const dDate = parseDate(dateStr);
   const routeStr = String(currentRoute);
   const label = document.getElementById('map-day-label');
   if (label) {
@@ -635,7 +620,9 @@ async function loadAll() {
       let cur = new Date(ci + 'T00:00:00');
       const end = new Date(co + 'T00:00:00');
       while (cur < end) {
-        const dateStr = cur.toISOString().split('T')[0];
+        // Use local date parts to avoid UTC offset shifting the date back by one day in BST
+        const y = cur.getFullYear(), mo = String(cur.getMonth()+1).padStart(2,'0'), d = String(cur.getDate()).padStart(2,'0');
+        const dateStr = `${y}-${mo}-${d}`;
         // Only add if no Hotel pin already exists for this date
         const already = appData.locations.some(l => l.Date===dateStr && l.Type==='Hotel');
         if (!already) {
@@ -784,7 +771,7 @@ async function renderToday() {
   const todayDay = days.find(d => d.date === todayStr)
     || (todayStr < '2026-06-22' ? days[0] : days[days.length-1]);
   const isPreTrip  = todayStr < '2026-06-22';
-  const isPostTrip = todayStr > '2026-07-22';
+  const isPostTrip = todayStr > '2026-07-21';
   const city    = todayDay ? todayDay.city.split('→')[0].trim() : 'En Route';
   const cityKey = getCity(city);
   const cityInfo = CITIES[cityKey] || CITIES['LONDON'];
@@ -917,7 +904,7 @@ async function renderToday() {
     </div>
     <div class="day-scroll-wrap"><div class="day-scroll" style="padding:10px 16px 14px">
       ${tripDays.map(d => {
-        const dDate=parseDate(d.date), dWx=wx[d.date];
+        const dDate=parseDate(d.date), dCk=getCity((d.city||'').split('→')[0].trim()), dWx=(weatherCache[dCk]||{})[d.date];
         const hasMatch=d.matches&&d.matches.some(m=>isEngland(m.match)||matchInCity(m.venue,d.city));
         return `<div class="wx-day${d.date===todayStr?' today':''}${hasMatch?' match-day':''}" onclick="jumpToDay('${d.date}')">
           <div class="wx-label">${DAYS[dDate.getDay()]}</div>
@@ -947,7 +934,6 @@ async function renderToday() {
       // Banner 2: next WC match (only show if different from England banner above, and not a match day)
       let banner2 = '';
       if (nextWCMatch && !itinMatch) {
-        const isEngInWC=/england/i.test(nextWCMatch.team1||'')||/england/i.test(nextWCMatch.team2||'');
         // Skip WC banner if it's the same match as the England banner
         const isSame = nextEngMatch && nextWCMatch.date===nextEngMatch.date && nextWCMatch.team1===nextEngMatch.team1;
         if (!isSame || !nextEngMatch) {
@@ -1010,12 +996,10 @@ function jumpToDay(dateStr) {
 /* ═══════════════════════════
    RENDER: ITINERARY
 ═══════════════════════════ */
-async function renderItinerary() {
+function renderItinerary() {
   const el = document.getElementById('page-itin');
   const days = getRouteDays();
   const todayStr = today();
-  const cityKeys = [...new Set(days.map(d => getCity((d.city||'').split('→')[0].trim())))];
-  await Promise.all(cityKeys.map(k => fetchWeather(k)));
 
   let lastCity = '', html = '<div class="fade"><div style="position:sticky;top:calc(52px + var(--safe-t));z-index:100;padding:6px 16px;background:var(--bg);display:flex;justify-content:flex-end"><button onclick="jumpToToday()" style="font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;background:var(--navy);color:var(--cream);border:none;border-radius:6px;padding:5px 12px;cursor:pointer">▶ Today</button></div>';
   days.forEach(d => {
