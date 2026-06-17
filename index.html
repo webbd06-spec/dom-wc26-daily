@@ -254,7 +254,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 const SHEET_ID  = '1j_YJwB1ox3A43Bv8TBhohr4Mh3nLWFguJlPEUgEve-w';
 const SHEET_KEY = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
 const MAPS_KEY  = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
-const CACHE_VER = 'dom-wc26-v18';
+const CACHE_VER = 'dom-wc26-v19';
 
 /* ═══ PWA SETUP ═══ */
 (function(){
@@ -1167,9 +1167,81 @@ function renderHotels() {
     orderedCities.forEach(city=>{
       const ci=CITIES[getCity(city)]||{};
       const mapId='hotel-map-'+city.replace(/\s+/g,'-');
-      if(document.getElementById(mapId)) renderDayMap(mapId,null,ci);
+      if(document.getElementById(mapId)) renderHotelMap(mapId,city,ci);
     });
   },200);
+}
+
+/* ═══ HOTEL-ONLY MAP (hotels tab) ═══ */
+function renderHotelMap(containerId, cityName, cityInfo) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const routeStr = String(currentRoute);
+  // Only Hotel-type pins, matching this city, for current route
+  const locs = (appData.locations||[]).filter(l => {
+    const r = l['Route'] || 'Both';
+    const cityMatch = (l['City']||'').toUpperCase() === cityName.toUpperCase();
+    return l['Type'] === 'Hotel' && cityMatch && (r === 'Both' || r === routeStr);
+  });
+
+  if (!locs.length) {
+    // Fallback: city-centre embed, no pins
+    container.innerHTML = `<iframe src="https://www.google.com/maps/embed/v1/view?key=${MAPS_KEY}&center=${cityInfo.lat},${cityInfo.lng}&zoom=13" style="width:100%;height:100%;border:none" allowfullscreen loading="lazy"></iframe>`;
+    return;
+  }
+
+  const doRender = () => {
+    if (!window.google || !window.google.maps) { setTimeout(doRender, 200); return; }
+    container.innerHTML = '';
+    const avgLat = locs.reduce((s,l) => s + parseFloat(l['Lat']||cityInfo.lat), 0) / locs.length;
+    const avgLng = locs.reduce((s,l) => s + parseFloat(l['Lng']||cityInfo.lng), 0) / locs.length;
+    const map = new google.maps.Map(container, {
+      center: { lat: avgLat, lng: avgLng },
+      zoom: locs.length === 1 ? 15 : 14,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      zoomControl: true,
+      styles: [{ featureType:'poi.business', stylers:[{visibility:'off'}] }]
+    });
+    const bounds = new google.maps.LatLngBounds();
+    locs.forEach(l => {
+      const lat = parseFloat(l['Lat']);
+      const lng = parseFloat(l['Lng']);
+      if (isNaN(lat)||isNaN(lng)) return;
+      const pos = { lat, lng };
+      bounds.extend(pos);
+      const marker = new google.maps.Marker({
+        position: pos, map,
+        title: l['Name'],
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 11,
+          fillColor: PIN_COLORS['Hotel'],
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2.5,
+        }
+      });
+      const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_name=${encodeURIComponent(l['Name']||'')}`;
+      const info = new google.maps.InfoWindow({
+        content: `<div style="font-family:Inter,sans-serif;min-width:160px;padding:4px 2px">
+          <div style="font-weight:700;color:#012169;font-size:13px;margin-bottom:2px">🏨 ${l['Name']}</div>
+          <div style="font-size:11px;color:#666">Hotel</div>
+          ${l['Notes'] ? `<div style="font-size:11px;color:#444;margin-top:3px;line-height:1.4">${l['Notes']}</div>` : ''}
+          <a href="${mapsUrl}" target="_blank"
+            style="display:flex;align-items:center;justify-content:center;gap:5px;margin-top:8px;padding:7px 10px;background:#012169;color:#FDE9C8;font-size:11px;font-weight:700;text-decoration:none;border-radius:6px;letter-spacing:.03em">
+            🗺 Open in Google Maps
+          </a>
+        </div>`
+      });
+      marker.addListener('click', () => info.open(map, marker));
+    });
+    if (locs.length > 1) map.fitBounds(bounds, { padding: 50 });
+  };
+
+  if (window._mapsReady && window.google) doRender();
+  else { window._mapsReadyCb = doRender; }
 }
 
 /* ═══ ERROR ═══ */
