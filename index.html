@@ -221,9 +221,10 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-sub" id="navSub">Loading…</div>
     </div>
   </div>
-  <div class="route-toggle">
-    <button class="rbtn active" onclick="setRoute(1)">1st</button>
-    <button class="rbtn" onclick="setRoute(2)">2nd</button>
+  <div class="route-toggle" id="route-toggle-wrap">
+    <button class="rbtn active" id="rbtn1" onclick="setRoute(1)">1st</button>
+    <button class="rbtn" id="rbtn2" onclick="setRoute(2)">2nd</button>
+    <button class="rbtn" id="rbtn-lock" onclick="toggleRouteLock()" style="padding:5px 8px;font-size:12px" title="Lock route">🔓</button>
   </div>
   <button onclick="refreshData()" style="background:none;border:none;cursor:pointer;padding:6px;color:rgba(253,233,200,.55);font-size:16px;line-height:1" title="Refresh data">↻</button>
   </div>
@@ -254,7 +255,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 const SHEET_ID  = '1j_YJwB1ox3A43Bv8TBhohr4Mh3nLWFguJlPEUgEve-w';
 const SHEET_KEY = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
 const MAPS_KEY  = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
-const CACHE_VER = 'dom-wc26-v19';
+const CACHE_VER = 'dom-wc26-v20';
 
 /* ═══ PWA SETUP ═══ */
 (function(){
@@ -349,7 +350,8 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 /* ═══ STATE ═══ */
-let currentRoute = 1;
+let currentRoute = parseInt(localStorage.getItem('wc26_route') || '1', 10);
+let routeLocked  = localStorage.getItem('wc26_locked') === 'true';
 let selectedDate = null;
 let appData = { itinRows:[], flights1:[], flights2:[], hotels:[], restaurants:[] };
 let weatherCache = {};
@@ -694,12 +696,55 @@ function nav(tab) {
   if (tab==='map' && loaded) renderMapPage();
   if (tab==='map' && mapPageInstance) setTimeout(() => google.maps.event.trigger(mapPageInstance,'resize'), 100);
 }
+function applyRouteLockUI() {
+  const btn1  = document.getElementById('rbtn1');
+  const btn2  = document.getElementById('rbtn2');
+  const lockBtn = document.getElementById('rbtn-lock');
+  if (!lockBtn) return;
+  if (routeLocked) {
+    lockBtn.textContent = '🔒';
+    lockBtn.title = 'Route locked — tap to unlock';
+    if (btn1) btn1.disabled = true;
+    if (btn2) btn2.disabled = true;
+    if (btn1) btn1.style.opacity = currentRoute===1 ? '1' : '0.3';
+    if (btn2) btn2.style.opacity = currentRoute===2 ? '1' : '0.3';
+  } else {
+    lockBtn.textContent = '🔓';
+    lockBtn.title = 'Tap to lock route';
+    if (btn1) btn1.disabled = false;
+    if (btn2) btn2.disabled = false;
+    if (btn1) btn1.style.opacity = '';
+    if (btn2) btn2.style.opacity = '';
+  }
+  // always keep active class correct
+  document.querySelectorAll('.rbtn').forEach((b,i) => {
+    if (i < 2) b.classList.toggle('active', i+1===currentRoute);
+  });
+}
+
+function toggleRouteLock() {
+  if (routeLocked) {
+    // Unlock — confirm first
+    if (!confirm('Unlock route? You can change between 1st and 2nd place routes again.')) return;
+    routeLocked = false;
+  } else {
+    // Lock
+    routeLocked = true;
+  }
+  localStorage.setItem('wc26_locked', String(routeLocked));
+  applyRouteLockUI();
+  if (loaded) renderToday(); // re-render today to show/hide nudge banner
+}
+
 function setRoute(r) {
+  if (routeLocked) return; // ignore taps when locked
   currentRoute = r;
-  document.querySelectorAll('.rbtn').forEach((b,i) => b.classList.toggle('active', i+1===r));
+  localStorage.setItem('wc26_route', String(r));
+  applyRouteLockUI();
   if (loaded) renderAll();
 }
 async function renderAll() {
+  applyRouteLockUI();
   appData.itinRows = currentRoute===1 ? (appData.itin1||[]) : (appData.itin2||[]);
   mapPageDate = null;
   renderToday();
@@ -948,6 +993,14 @@ async function renderToday() {
       return banner1 + banner2;
     })()}
 
+    ${!routeLocked ? `<div class="alert" style="margin-top:10px">
+      <div class="alert-icon">🔀</div>
+      <div>
+        <div class="alert-title" style="color:var(--navy)">Route not confirmed yet</div>
+        <div class="alert-text" style="color:var(--text-2)">Currently showing <strong>Route ${currentRoute} (England finish ${currentRoute===1?'1st':'2nd'})</strong>. England vs Panama result decides on 27 Jun. Once you know, lock it with 🔓 in the top right.</div>
+      </div>
+    </div>` : ''}
+
     ${tlHTML?`<div class="sec">Today's Plan</div><div class="tl">${tlHTML}</div>`:''}
     ${matchListHTML}
     ${mapHTML}
@@ -1135,113 +1188,57 @@ function renderHotels() {
   show.forEach(h=>{const c=h['City']||'Other';if(!byCity[c])byCity[c]=[];byCity[c].push(h);});
   const cityOrder=['Boston','NYC','Atlanta','Mexico City','Miami','Toronto','Dallas','New York'];
   const orderedCities=cityOrder.filter(c=>byCity[c]).concat(Object.keys(byCity).filter(c=>!cityOrder.includes(c)));
-  let html='<div class="fade">';
+
+  // Summary counts
+  const confirmedCount = show.filter(h=>(h['Status']||'').toLowerCase()==='confirmed').length;
+  const optionCount    = show.filter(h=>(h['Status']||'').toLowerCase()==='option').length;
+
+  let html=`<div class="fade">
+  <div style="display:flex;gap:8px;padding:12px 16px 4px">
+    <div style="flex:1;background:var(--green-dim);border:1px solid rgba(21,128,61,.2);border-radius:10px;padding:10px 12px;text-align:center">
+      <div style="font-family:var(--display);font-size:28px;color:var(--green)">${confirmedCount}</div>
+      <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-top:2px">Confirmed</div>
+    </div>
+    <div style="flex:1;background:var(--gold-dim);border:1px solid rgba(217,119,6,.2);border-radius:10px;padding:10px 12px;text-align:center">
+      <div style="font-family:var(--display);font-size:28px;color:var(--gold)">${optionCount}</div>
+      <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-top:2px">Options</div>
+    </div>
+    <div style="flex:1;background:var(--navy-dim);border:1px solid rgba(1,33,105,.1);border-radius:10px;padding:10px 12px;text-align:center">
+      <div style="font-family:var(--display);font-size:28px;color:var(--navy)">${orderedCities.length}</div>
+      <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-top:2px">Cities</div>
+    </div>
+  </div>`;
+
   orderedCities.forEach(city=>{
     const ck=getCity(city), ci=CITIES[ck]||{};
     html+=`<div class="sec">${ci.flag||'🏙'} ${city}</div>`;
-    const hotelMapId='hotel-map-'+city.replace(/\s+/g,'-');
-    html+=`<div class="map-wrap" id="${hotelMapId}" style="margin:0 16px 10px;height:180px"></div>`;
     byCity[city].forEach(h=>{
       const isConf=(h['Status']||'').toLowerCase()==='confirmed';
+      const isOpt =(h['Status']||'').toLowerCase()==='option';
       const dl=daysUntil((h['Refund Deadline']||'').split(' ').slice(0,3).join(' '));
-      const ciDate=toISODate(h['Check In']); const nowMidnight=new Date(); nowMidnight.setHours(0,0,0,0); const daysToCI=ciDate?Math.ceil((parseDate(ciDate)-nowMidnight)/86400000):null;
+      const ciDate=toISODate(h['Check In']);
+      const nowMidnight=new Date(); nowMidnight.setHours(0,0,0,0);
+      const daysToCI=ciDate?Math.ceil((parseDate(ciDate)-nowMidnight)/86400000):null;
       const ciCountdown=daysToCI!==null?(daysToCI===0?'<span style="color:var(--green);font-size:10px;font-weight:700">✓ Check in today</span>':daysToCI>0?`<span style="font-size:10px;color:var(--text-3)">Check in ${daysToCI===1?'tomorrow':'in '+daysToCI+' days'}</span>`:''):'';
-      html+=`<div class="hotel-item">
-        <div class="hi-city">${city}</div>
-        <div class="hi-name">${h['Hotel Name']||'—'}</div>
+      html+=`<div class="hotel-item" style="${isOpt?'border-color:rgba(217,119,6,.3);background:rgba(217,119,6,.03)':''}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+          <div class="hi-name" style="flex:1">${h['Hotel Name']||'—'}</div>
+          <div class="${isConf?'s-confirmed':'s-option'}" style="flex-shrink:0;margin-left:8px">${isConf?'Confirmed':'Option'}</div>
+        </div>
         <div class="hi-dates">${h['Check In']||''} → ${h['Check Out']||''} · ${h['Nights']||'?'} nights</div>
-        <div class="hi-meta">
-          <div class="${isConf?'s-confirmed':'s-option'}">${h['Status']||'—'}</div>
+        <div class="hi-meta" style="margin-top:8px">
           ${h['Total (£)']?`<span class="conf-badge">${h['Total (£)']}</span>`:''}
+          ${h['Per Person (£)']?`<span class="conf-badge" style="background:var(--navy-dim)">pp ${h['Per Person (£)']}</span>`:''}
           ${h['Booking #']?`<span class="conf-badge">#${h['Booking #']}</span>`:''}
           ${ciCountdown}
         </div>
-        ${h['Refund Deadline']?`<div class="cancel-line">⚠️ Cancel by: ${h['Refund Deadline']}${dl!==null?` (${dl}d)`:''}</div>`:''}
+        ${h['Refund Deadline']?`<div class="cancel-line">⚠️ Cancel by: ${h['Refund Deadline']}${dl!==null&&dl>=0?` (${dl}d)`:''}</div>`:''}
         ${h['Notes']?`<div class="hi-note">${h['Notes']}</div>`:''}
       </div>`;
     });
   });
-  html+='</div>';
+  html+='<div class="sp16"></div></div>';
   el.innerHTML=html;
-  setTimeout(()=>{
-    orderedCities.forEach(city=>{
-      const ci=CITIES[getCity(city)]||{};
-      const mapId='hotel-map-'+city.replace(/\s+/g,'-');
-      if(document.getElementById(mapId)) renderHotelMap(mapId,city,ci);
-    });
-  },200);
-}
-
-/* ═══ HOTEL-ONLY MAP (hotels tab) ═══ */
-function renderHotelMap(containerId, cityName, cityInfo) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-  const routeStr = String(currentRoute);
-  // Only Hotel-type pins, matching this city, for current route
-  const locs = (appData.locations||[]).filter(l => {
-    const r = l['Route'] || 'Both';
-    const cityMatch = (l['City']||'').toUpperCase() === cityName.toUpperCase();
-    return l['Type'] === 'Hotel' && cityMatch && (r === 'Both' || r === routeStr);
-  });
-
-  if (!locs.length) {
-    // Fallback: city-centre embed, no pins
-    container.innerHTML = `<iframe src="https://www.google.com/maps/embed/v1/view?key=${MAPS_KEY}&center=${cityInfo.lat},${cityInfo.lng}&zoom=13" style="width:100%;height:100%;border:none" allowfullscreen loading="lazy"></iframe>`;
-    return;
-  }
-
-  const doRender = () => {
-    if (!window.google || !window.google.maps) { setTimeout(doRender, 200); return; }
-    container.innerHTML = '';
-    const avgLat = locs.reduce((s,l) => s + parseFloat(l['Lat']||cityInfo.lat), 0) / locs.length;
-    const avgLng = locs.reduce((s,l) => s + parseFloat(l['Lng']||cityInfo.lng), 0) / locs.length;
-    const map = new google.maps.Map(container, {
-      center: { lat: avgLat, lng: avgLng },
-      zoom: locs.length === 1 ? 15 : 14,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-      zoomControl: true,
-      styles: [{ featureType:'poi.business', stylers:[{visibility:'off'}] }]
-    });
-    const bounds = new google.maps.LatLngBounds();
-    locs.forEach(l => {
-      const lat = parseFloat(l['Lat']);
-      const lng = parseFloat(l['Lng']);
-      if (isNaN(lat)||isNaN(lng)) return;
-      const pos = { lat, lng };
-      bounds.extend(pos);
-      const marker = new google.maps.Marker({
-        position: pos, map,
-        title: l['Name'],
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 11,
-          fillColor: PIN_COLORS['Hotel'],
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 2.5,
-        }
-      });
-      const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_name=${encodeURIComponent(l['Name']||'')}`;
-      const info = new google.maps.InfoWindow({
-        content: `<div style="font-family:Inter,sans-serif;min-width:160px;padding:4px 2px">
-          <div style="font-weight:700;color:#012169;font-size:13px;margin-bottom:2px">🏨 ${l['Name']}</div>
-          <div style="font-size:11px;color:#666">Hotel</div>
-          ${l['Notes'] ? `<div style="font-size:11px;color:#444;margin-top:3px;line-height:1.4">${l['Notes']}</div>` : ''}
-          <a href="${mapsUrl}" target="_blank"
-            style="display:flex;align-items:center;justify-content:center;gap:5px;margin-top:8px;padding:7px 10px;background:#012169;color:#FDE9C8;font-size:11px;font-weight:700;text-decoration:none;border-radius:6px;letter-spacing:.03em">
-            🗺 Open in Google Maps
-          </a>
-        </div>`
-      });
-      marker.addListener('click', () => info.open(map, marker));
-    });
-    if (locs.length > 1) map.fitBounds(bounds, { padding: 50 });
-  };
-
-  if (window._mapsReady && window.google) doRender();
-  else { window._mapsReadyCb = doRender; }
 }
 
 /* ═══ ERROR ═══ */
