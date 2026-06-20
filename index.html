@@ -259,7 +259,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 const SHEET_ID  = '1j_YJwB1ox3A43Bv8TBhohr4Mh3nLWFguJlPEUgEve-w';
 const SHEET_KEY = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
 const MAPS_KEY  = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
-const CACHE_VER = 'dom-wc26-v21';
+const CACHE_VER = 'dom-wc26-v24';
 
 /* ═══ PWA SETUP ═══ */
 (function(){
@@ -366,12 +366,23 @@ const today = () => { const n=new Date(); return `${n.getFullYear()}-${String(n.
 
 function parseDate(s) {
   if (!s) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) {
-    const [y,m,d] = s.trim().split('-').map(Number);
+  const str = s.trim();
+  // ISO yyyy-mm-dd — safe local parse
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    const [y,m,d] = str.split('-').map(Number);
     return new Date(y, m-1, d);
   }
-  const d = new Date(s.replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s*/i,''));
-  return isNaN(d) ? null : d;
+  // Sheet formats: "Mon, Jun 22" / "Thu, Jul 2" / "Mon 22 Jun" / "22 Jun 2026"
+  // Strip leading day-of-week abbreviation
+  const clean = str.replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s*/i, '').trim();
+  // Try "Jun 22" / "Jun 22 2026" / "22 Jun" / "22 Jun 2026"
+  const mNames = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11,January:0,February:1,March:2,April:3,June:5,July:6,August:7,September:8,October:9,November:10,December:11};
+  const m1 = clean.match(/^([A-Za-z]{3})\s+(\d{1,2})(?:\s+(\d{4}))?$/);
+  if (m1) { const mo=mNames[m1[1]]; if(mo!==undefined) return new Date(parseInt(m1[3]||2026), mo, parseInt(m1[2])); }
+  const m2 = clean.match(/^(\d{1,2})\s+([A-Za-z]{3})(?:\s+(\d{4}))?$/);
+  if (m2) { const mo=mNames[m2[2]]; if(mo!==undefined) return new Date(parseInt(m2[3]||2026), mo, parseInt(m2[1])); }
+  // "2026-06-22" already handled; last resort numeric — avoid new Date(string) UTC trap
+  return null;
 }
 function toISODate(s) { const d=parseDate(s); if(!d) return ''; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function fmtDate(s) { if(!s) return ''; const d=parseDate(s); if(!d) return s; return `${d.getDate()} ${MONTHS[d.getMonth()]}`; }
@@ -426,8 +437,10 @@ async function getSheetMeta() {
 }
 async function fetchSheetByKeyword(keyword, range) {
   const meta = await getSheetMeta();
-  let sheet = meta.find(s => s.title.includes(keyword));
-  if (!sheet) sheet = meta.find(s => s.title.replace(/[^\w\s()]/g,'').trim().includes(keyword));
+  // Exact match first, then substring, then stripped-emoji substring
+  let sheet = meta.find(s => s.title === keyword)
+    || meta.find(s => s.title.includes(keyword))
+    || meta.find(s => s.title.replace(/[^\w\s()]/g,'').trim().includes(keyword));
   if (!sheet) throw new Error(`No tab found matching: ${keyword}`);
   return fetchSheet(`'${sheet.title}'!${range}`);
 }
@@ -487,15 +500,20 @@ function getNextWCMatch(matches) {
 /* ═══ MAP PAGE ═══ */
 let mapPageInstance = null;
 let mapPageDate = null;
+let mapPageRoute = null;
 
 async function renderMapPage() {
   const days = getRouteDays();
   if (!days.length) return;
   const todayStr = today();
   const defaultDay = days.find(d => d.date === todayStr) || days[0];
-  if (!mapPageDate) mapPageDate = defaultDay.date;
+  // If route changed or mapPageDate doesn't exist on this route, reset to today/first day
+  const dateExistsOnRoute = days.some(d => d.date === mapPageDate);
+  if (!mapPageDate || !dateExistsOnRoute) mapPageDate = defaultDay.date;
   const scroll = document.getElementById('map-day-scroll');
-  if (scroll && !scroll.hasChildNodes()) {
+  // Rebuild chips if never built OR if route has changed since last build
+  if (scroll && (!scroll.hasChildNodes() || mapPageRoute !== currentRoute)) {
+    mapPageRoute = currentRoute;
     scroll.innerHTML = days.map(d => {
       const dDate = parseDate(d.date);
       const hasMatch = (d.matches||[]).some(m => isEngland(m.match) || matchInCity(m.venue, d.city));
@@ -660,7 +678,7 @@ async function loadAll() {
 }
 
 async function refreshData() {
-  weatherCache = {}; _wcMatches = null; _sheetMeta = null; loaded = false;
+  weatherCache = {}; _wcMatches = null; _sheetMeta = null; loaded = false; mapPageRoute = null;
   document.getElementById('page-today').innerHTML = '<div class="loading-wrap"><div class="spinner"></div><div class="loading-text">Refreshing…</div></div>';
   await loadAll();
 }
@@ -751,11 +769,12 @@ async function renderAll() {
   applyRouteLockUI();
   appData.itinRows = currentRoute===1 ? (appData.itin1||[]) : (appData.itin2||[]);
   // Preserve mapPageDate across route switches so user doesn't lose their place on the map tab
-  renderToday();
+  await renderToday();
   renderItinerary();
   renderFlights();
   renderHotels();
-  renderMapPage();
+  // Only re-render map if the map tab is currently active — avoids creating unused map instances
+  if (document.getElementById('page-map').classList.contains('active')) renderMapPage();
   const days = getRouteDays();
   const td = days.find(d => d.date === today());
   const city = td ? td.city.split('→')[0].trim() : 'En Route';
@@ -841,14 +860,15 @@ async function renderToday() {
     return !finished && (/england/i.test(m.team1||'')||/england/i.test(m.team2||''));
   }).sort((a,b) => a.date.localeCompare(b.date)||(a.time||'').localeCompare(b.time||''))[0]||null;
 
-  const confirmedHotels = appData.hotels.filter(h => (h['Status']||'').toLowerCase()==='confirmed');
+  const confirmedHotels = appData.hotels.filter(h => (h['Status']||'').toLowerCase()==='confirmed' && h._route===currentRoute);
   const tonightHotel = confirmedHotels.find(h => {
     const ci=toISODate(h['Check In']), co=toISODate(h['Check Out']);
     return ci&&co&&todayStr>=ci&&todayStr<co;
   }) || (isPreTrip ? confirmedHotels.find(h => h['City']==='Boston') : null);
 
   const flights = currentRoute===1 ? appData.flights1 : appData.flights2;
-  const nextFlight = flights.find(f => { const d=toISODate(f['Date']||''); return d&&d>=todayStr; }) || flights[0];
+  const nextFlight = flights.find(f => { const d=toISODate(f['Date']||f['Date ']||''); return d&&d>=todayStr; }) || flights[0];
+  const nextFlightDate = toISODate((nextFlight&&(nextFlight['Date']||nextFlight['Date ']))||'');
 
   // My matches — localise times
   const myMatches = todayDay
@@ -867,12 +887,10 @@ async function renderToday() {
 
   const primaryMatch = myMatches[0] || null;
 
-  const tripDays = days.filter(d => d.date >= todayStr).slice(0, 14).concat(
-    days.filter(d => d.date < todayStr).slice(-3)
-  ).sort((a,b) => a.date.localeCompare(b.date));
+  const tripDays = days.filter(d => d.date >= todayStr).slice(0, 14);
   const pills = [];
   if (primaryMatch) pills.push(`<div class="hpill match">⚽ Match Day</div>`);
-  if (nextFlight&&(nextFlight['Date']||nextFlight['Date ']||'')===todayStr) pills.push(`<div class="hpill">✈️ Flight Day</div>`);
+  if (nextFlight&&nextFlightDate===todayStr) pills.push(`<div class="hpill">✈️ Flight Day</div>`);
   if (tonightHotel) pills.push(`<div class="hpill">🏨 ${(tonightHotel['Hotel Name']||'Hotel').split(' ').slice(0,3).join(' ')}</div>`);
   if (todayWx) pills.push(`<div class="hpill">${WX_ICONS[todayWx.code]||'🌡'} ${todayWx.max}°C · ${todayWx.rain}% rain</div>`);
 
@@ -925,7 +943,7 @@ async function renderToday() {
   let flightHTML = '';
   if (nextFlight) {
     const f=nextFlight;
-    const isFlightDay=(f['Date']||'')===todayStr;
+    const isFlightDay=nextFlightDate===todayStr;
     flightHTML = `<div class="sec">✈️ ${isFlightDay?"Today's Flight":"Next Flight"}</div><div class="card cp">
       <div class="fl-route">
         <div><div class="fl-iata">${extractIATA(f['From'])}</div><div class="fl-city">${f['From']||''}</div></div>
@@ -1042,9 +1060,10 @@ function jumpToDay(dateStr) {
       if (body && body.style.display==='none') {
         body.style.display='';
         if (chev) chev.style.transform='rotate(180deg)';
-        const days=getRouteDays(), d=days.find(x=>x.date===dateStr);
-        if (d) { const ck=getCity((d.city||'').split('→')[0].trim()); const ci=CITIES[ck]||CITIES['LONDON']; setTimeout(()=>renderDayMap('itin-map-'+dateStr,dateStr,ci),100); }
       }
+      // Always render the day map — covers both the "was closed" and "was already open" cases
+      const days=getRouteDays(), d=days.find(x=>x.date===dateStr);
+      if (d) { const ck=getCity((d.city||'').split('→')[0].trim()); const ci=CITIES[ck]||CITIES['LONDON']; setTimeout(()=>renderDayMap('itin-map-'+dateStr,dateStr,ci),100); }
       el.scrollIntoView({behavior:'smooth',block:'start'});
     }
   }, 150);
@@ -1122,16 +1141,15 @@ function renderItinerary() {
   if (selectedDate) {
     setTimeout(() => { const t=document.getElementById('day-'+selectedDate); if(t) t.scrollIntoView({behavior:'smooth',block:'start'}); }, 50);
   }
-  setTimeout(() => {
-    days.forEach(d => {
-      const isPast=d.date<todayStr, isToday=d.date===todayStr;
-      if (!isPast||isToday) {
-        const ck=getCity((d.city||'').split('→')[0].trim());
-        const ci=CITIES[ck]||CITIES['LONDON'];
-        renderDayMap('itin-map-'+d.date, d.date, ci);
-      }
-    });
-  }, 300);
+  // Stagger map renders to avoid firing 20 simultaneous Google Maps initialisations
+  const renderableDays = days.filter(d => { const isPast=d.date<todayStr, isToday=d.date===todayStr; return !isPast||isToday; });
+  renderableDays.forEach((d, i) => {
+    setTimeout(() => {
+      const ck=getCity((d.city||'').split('→')[0].trim());
+      const ci=CITIES[ck]||CITIES['LONDON'];
+      renderDayMap('itin-map-'+d.date, d.date, ci);
+    }, 300 + i * 80);
+  });
 }
 
 function toggleDay(dateStr) {
@@ -1155,10 +1173,10 @@ function renderFlights() {
   const flights=currentRoute===1?appData.flights1:appData.flights2;
   let html='<div class="fade"><div class="sec">All Flights · Route '+currentRoute+'</div>';
   flights.filter(f=>f['From']||f['Flight No.']).forEach(f=>{
-    const rawDate=f['Date']||'';
-    const date=toISODate(rawDate)||rawDate;
-    const isPast=date&&date<todayStr;
-    const isFlightToday=date===todayStr;
+    const rawDate=f['Date']||f['Date ']||'';
+    const date=toISODate(rawDate);
+    const isPast=!!date&&date<todayStr;
+    const isFlightToday=!!date&&date===todayStr;
     const isConf=(f['Status']||'').toLowerCase().includes('confirmed');
     html+=`<div class="fl-item${isPast?' past':''}${isFlightToday?' today-flight':''}">
       <div class="fl-hdr"><div class="fl-date-lbl">${rawDate||'TBC'} · ${f['Airline']||''}</div><div style="display:flex;gap:6px;align-items:center">${isFlightToday?'<span style="background:var(--cream);color:var(--navy);font-size:9px;font-weight:700;padding:2px 8px;border-radius:4px">TODAY</span>':''}<span class="${isConf?'badge-confirmed':'badge-tbc'}">${f['Status']||'TBC'}</span></div></div>
@@ -1189,7 +1207,7 @@ function renderHotels() {
   });
   const byCity={};
   show.forEach(h=>{const c=h['City']||'Other';if(!byCity[c])byCity[c]=[];byCity[c].push(h);});
-  const cityOrder=['Boston','NYC','Atlanta','Mexico City','Miami','Toronto','Dallas','New York'];
+  const cityOrder=['Boston','NYC','New York','Atlanta','Mexico City','Miami','Toronto','Dallas'];
   const orderedCities=cityOrder.filter(c=>byCity[c]).concat(Object.keys(byCity).filter(c=>!cityOrder.includes(c)));
 
   // Summary counts
@@ -1246,7 +1264,7 @@ function renderHotels() {
 
 /* ═══ ERROR ═══ */
 function showGlobalError(msg) {
-  ['today','itin','flights','hotels'].forEach(p => {
+  ['today','itin','flights','hotels','map'].forEach(p => {
     const el=document.getElementById('page-'+p);
     if(el) el.innerHTML=`<div style="padding:40px 20px;text-align:center"><div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Couldn't load data</div><div style="font-size:12px;color:var(--text-3);line-height:1.5">${msg}<br><br>Check the Sheets API key and ensure the spreadsheet is publicly readable.</div></div>`;
   });
