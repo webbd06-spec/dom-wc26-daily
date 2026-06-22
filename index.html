@@ -259,7 +259,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);min-height:1
 const SHEET_ID  = '1j_YJwB1ox3A43Bv8TBhohr4Mh3nLWFguJlPEUgEve-w';
 const SHEET_KEY = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
 const MAPS_KEY  = 'AIzaSyA32nyJoi_pf8E9PbY_TiVICjGEQlkY1sY';
-const CACHE_VER = 'dom-wc26-v24';
+const CACHE_VER = 'dom-wc26-v25';
 
 /* ═══ PWA SETUP ═══ */
 (function(){
@@ -665,6 +665,8 @@ async function loadAll() {
       }
     });
     appData.restaurants = toObjs(restRaw);
+    // Fetch WC match schedule so itinerary can show all matches without sheet data entry
+    appData.wcMatches = await fetchWCMatches();
     // Prefetch weather for all cities so the strip is fully populated from the start
     const allCityKeys = [...new Set([...appData.itin1, ...appData.itin2].map(r => getCity((r['City']||'').split('→')[0].trim())))];
     await Promise.all(allCityKeys.map(k => fetchWeather(k)));
@@ -681,6 +683,89 @@ async function refreshData() {
   weatherCache = {}; _wcMatches = null; _sheetMeta = null; loaded = false; mapPageRoute = null;
   document.getElementById('page-today').innerHTML = '<div class="loading-wrap"><div class="spinner"></div><div class="loading-text">Refreshing…</div></div>';
   await loadAll();
+}
+
+/* ═══ WC MATCH INJECTION ═══ */
+// Maps openfootball 'ground' strings to app city keys
+const WC_GROUND_CITY = {
+  'Boston (Foxborough)':              'BOSTON',
+  'New York/New Jersey (East Rutherford)': 'NEW YORK',
+  'Atlanta':                          'ATLANTA',
+  'Mexico City':                      'MEXICO CITY',
+  'Miami (Miami Gardens)':            'MIAMI',
+  'Toronto':                          'TORONTO',
+  'Dallas (Arlington)':               'DALLAS',
+  'Houston':                          'BOSTON',     // not on our route — won't match any day city
+  'Philadelphia':                     'BOSTON',     // not on our route
+  'Los Angeles (Inglewood)':          'BOSTON',     // not on our route
+  'Kansas City':                      'BOSTON',     // not on our route
+  'San Francisco Bay Area (Santa Clara)': 'BOSTON', // not on our route
+  'Seattle':                          'BOSTON',     // not on our route
+  'Vancouver':                        'BOSTON',     // not on our route
+  'Guadalajara (Zapopan)':            'BOSTON',     // not on our route
+  'Monterrey (Guadalupe)':            'BOSTON',     // not on our route
+};
+
+/**
+ * Convert openfootball time strings like "17:00 UTC-4" or "19:00 UTC-6"
+ * into local time at the viewer's city, returning plain "HH:MM" (no tz suffix).
+ */
+function convertUTCOffsetTime(rawTime, cityKey) {
+  if (!rawTime) return '';
+  const m = rawTime.trim().match(/^(\d{1,2}):(\d{2})\s+UTC([+-]\d+)$/);
+  if (!m) return rawTime;
+  const [, hStr, minStr, offsetStr] = m;
+  const srcOffset = parseInt(offsetStr, 10);       // e.g. -4, -6, -7
+  const cityInfo  = CITIES[cityKey] || CITIES['LONDON'];
+  const destOffset = cityInfo.utcOffset;            // e.g. -4 for ET
+  const srcMinutes = parseInt(hStr) * 60 + parseInt(minStr);
+  const deltaMin   = (destOffset - srcOffset) * 60;
+  let localMin     = ((srcMinutes + deltaMin) % 1440 + 1440) % 1440;
+  const lh = Math.floor(localMin / 60);
+  const lm = localMin % 60;
+  return `${String(lh).padStart(2,'0')}:${String(lm).padStart(2,'0')}`;
+}
+
+/**
+ * Inject openfootball WC matches into each day's matches array.
+ * Sheet rows take precedence — if a match (same date + same teams) is already
+ * present as mine:true from the sheet, we skip adding a duplicate.
+ */
+function injectWCMatches(days, wcArr, cityKey) {
+  if (!wcArr || !wcArr.length) return;
+  const byDate = {};
+  days.forEach(d => { byDate[d.date] = d; });
+
+  wcArr.forEach(m => {
+    const date = m.date;
+    if (!date || !byDate[date]) return;
+
+    const t1 = typeof m.team1 === 'string' ? m.team1 : (m.team1||{}).name || '';
+    const t2 = typeof m.team2 === 'string' ? m.team2 : (m.team2||{}).name || '';
+    const matchStr = `${t1} vs ${t2}`;
+    const ground   = m.ground || '';
+    const groundCity = WC_GROUND_CITY[ground] || '';
+    const isEng    = isEngland(matchStr);
+    const day      = byDate[date];
+
+    // Skip if already in the day's matches from the sheet (England matches come in as mine:true)
+    const alreadyPresent = day.matches.some(ex =>
+      isEngland(ex.match) && isEng
+    );
+    if (alreadyPresent) return;
+
+    // Convert time to local time for the viewer's city
+    const localTime = convertUTCOffsetTime(m.time || '', cityKey);
+
+    day.matches.push({
+      kickoff:   localTime,
+      match:     matchStr,
+      venue:     ground,
+      type:      'Match-Other',
+      mine:      false,
+      groundCity: groundCity,
+    });
+  });
 }
 
 /* ═══ GROUP ITINERARY BY DATE ═══ */
@@ -706,7 +791,16 @@ function groupItinByDate(rows) {
 }
 function getRouteDays() {
   const rows = currentRoute===1 ? (appData.itin1||[]) : (appData.itin2||[]);
-  return groupItinByDate(rows);
+  const days = groupItinByDate(rows);
+  // Inject WC match schedule from openfootball, localised to each day's city
+  const wcArr = appData.wcMatches || [];
+  days.forEach(d => {
+    const ck = getCity((d.city||'').split('\u2192')[0].trim());
+    injectWCMatches([d], wcArr, ck);
+    // Sort matches by localised kick-off time
+    d.matches.sort((a, b) => timeToMinutes(a.kickoff) - timeToMinutes(b.kickoff));
+  });
+  return days;
 }
 
 /* ═══ NAV ═══ */
@@ -1090,7 +1184,7 @@ function renderItinerary() {
     const cityInfo=CITIES[ck]||{};
     const myMatches=d.matches.filter(m=>m.mine||isEngland(m.match));
     const hasContent=d.activities.length||d.matches.length;
-    const actCount=d.activities.length+d.matches.length;
+    const actCount=d.activities.length+myMatches.length; // badge shows meaningful items only
     const startOpen=!isPast||isToday;
 
     // Localise all match times for this city and sort
